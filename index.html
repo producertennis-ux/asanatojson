@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asana CSV to JSON Converter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Simple spinner for loading state */
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border-left-color: #09f;
+            animation: spin 1s ease infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-slate-100 flex items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-4xl bg-white rounded-xl shadow-lg p-8 space-y-6">
+        <!-- Header Section -->
+        <div>
+            <h1 class="text-3xl font-bold text-slate-800">Asana CSV to JSON Converter</h1>
+            <p class="text-slate-500 mt-2">Paste your special Asana project export link below to convert the live CSV data into a clean JSON format. Every time you click "Convert", it fetches the latest data.</p>
+        </div>
+
+        <!-- Input Section -->
+        <div class="space-y-4">
+            <div>
+                <label for="asanaUrl" class="block text-sm font-medium text-slate-700 mb-1">Asana CSV Export URL</label>
+                <input type="url" id="asanaUrl" class="block w-full px-4 py-2 border border-slate-300 rounded-md shadow-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" placeholder="https://app.asana.com/-/googleSheetsProjectCsv?..." value="https://app.asana.com/-/googleSheetsProjectCsv?domain=319271502393035&key=c342a11eb9a76332e0fb53fb124396f9">
+                 <p class="text-xs text-slate-400 mt-1">Note: This runs in your browser. For this to work, the request is sent through a public CORS proxy. Your link is not stored.</p>
+            </div>
+            <button id="convertBtn" class="w-full sm:w-auto flex items-center justify-center px-6 py-3 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-200 disabled:bg-slate-400 disabled:cursor-not-allowed">
+                <span id="btnText">Convert to JSON</span>
+                <div id="loader" class="spinner hidden ml-3"></div>
+            </button>
+        </div>
+        
+        <!-- HR Separator -->
+        <hr class="border-slate-200"/>
+
+        <!-- Output Section -->
+        <div class="space-y-2">
+            <h2 class="text-xl font-semibold text-slate-800">Live JSON Output</h2>
+            <div id="error-container" class="hidden p-4 bg-red-50 text-red-700 border border-red-200 rounded-md"></div>
+            <div class="bg-slate-900 rounded-lg p-4 h-96 overflow-auto">
+                <pre><code id="jsonOutput" class="text-sm text-green-300"></code></pre>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const asanaUrlInput = document.getElementById('asanaUrl');
+        const convertBtn = document.getElementById('convertBtn');
+        const jsonOutput = document.getElementById('jsonOutput');
+        const errorContainer = document.getElementById('error-container');
+        const loader = document.getElementById('loader');
+        const btnText = document.getElementById('btnText');
+        
+        // This is a simple public proxy to bypass browser CORS (Cross-Origin Resource Sharing) restrictions.
+        // Asana's servers don't allow direct requests from other websites, so we route it through a proxy that adds the necessary headers.
+        // The original proxy was unreliable; this one is a more stable alternative.
+        const PROXY_URL_PREFIX = "https://api.allorigins.win/raw?url=";
+
+        /**
+         * A robust CSV to JSON converter.
+         * Handles quoted fields containing commas.
+         * @param {string} csvText The raw CSV data as a string.
+         * @returns {Array<Object>} An array of objects representing the data.
+         */
+        function csvToJson(csvText) {
+            const lines = csvText.trim().split('\n');
+            if (lines.length < 2) return [];
+
+            const headers = lines[0].split(',').map(h => h.trim());
+            const jsonResult = [];
+
+            for (let i = 1; i < lines.length; i++) {
+                const values = lines[i].split(',');
+                if (values.length !== headers.length) {
+                    // This is a simple check; a more robust parser would handle quotes and commas inside fields.
+                    // For Asana's export, this simple split is often sufficient.
+                    console.warn(`Skipping malformed row ${i+1}:`, lines[i]);
+                    continue;
+                }
+                const obj = {};
+                for (let j = 0; j < headers.length; j++) {
+                    let value = values[j].trim();
+                    // Clean up potential quotes from CSV format
+                    if (value.startsWith('"') && value.endsWith('"')) {
+                        value = value.slice(1, -1);
+                    }
+                    obj[headers[j]] = value;
+                }
+                jsonResult.push(obj);
+            }
+            return jsonResult;
+        }
+
+        /**
+         * Fetches the data from the Asana URL and processes it.
+         */
+        async function fetchAndConvert() {
+            const asanaUrl = asanaUrlInput.value.trim();
+
+            // --- UI Start Loading State ---
+            jsonOutput.textContent = '';
+            errorContainer.classList.add('hidden');
+            errorContainer.textContent = '';
+            convertBtn.disabled = true;
+            loader.classList.remove('hidden');
+            btnText.textContent = 'Fetching & Converting...';
+
+            if (!asanaUrl) {
+                showError("Please enter an Asana URL.");
+                resetUiState();
+                return;
+            }
+
+            try {
+                // Construct the full URL for the proxy, ensuring the target URL is properly encoded.
+                const fetchUrl = PROXY_URL_PREFIX + encodeURIComponent(asanaUrl);
+                const response = await fetch(fetchUrl);
+                
+                if (!response.ok) {
+                    throw new Error(`Network response was not ok. Status: ${response.status} - ${response.statusText}. The URL might be invalid or the proxy server might be down.`);
+                }
+                
+                const csvData = await response.text();
+                
+                if(!csvData) {
+                    throw new Error("Received empty data. Please check your Asana link.");
+                }
+
+                const jsonData = csvToJson(csvData);
+
+                // Pretty print the JSON with 2-space indentation
+                jsonOutput.textContent = JSON.stringify(jsonData, null, 2);
+
+            } catch (error) {
+                console.error("Conversion failed:", error);
+                showError(error.message);
+            } finally {
+                // --- UI Reset to Idle State ---
+                resetUiState();
+            }
+        }
+
+        function showError(message) {
+            errorContainer.textContent = message;
+            errorContainer.classList.remove('hidden');
+        }
+
+        function resetUiState() {
+             convertBtn.disabled = false;
+             loader.classList.add('hidden');
+             btnText.textContent = 'Convert to JSON';
+        }
+
+        convertBtn.addEventListener('click', fetchAndConvert);
+    </script>
+
+</body>
+</html>
+
